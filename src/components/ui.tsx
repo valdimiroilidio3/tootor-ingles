@@ -17,9 +17,9 @@ const VARIANTS: Record<Variant, string> = {
   success: "bg-success text-white border-b-4 border-[#237a45] hover:brightness-105 active:border-b-0 active:translate-y-1",
 };
 const SIZES: Record<Size, string> = {
-  sm: "h-9 px-4 text-sm",
-  md: "h-11 px-6 text-[15px]",
-  lg: "h-14 px-8 text-base",
+  sm: "min-h-11 px-4 text-sm",
+  md: "min-h-11 px-6 text-[15px]",
+  lg: "min-h-14 px-8 text-base",
 };
 
 export function buttonClasses(variant: Variant = "primary", size: Size = "md", extra?: string) {

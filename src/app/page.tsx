@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { ArrowRight, Calendar, Flame, Layers, Target, Trophy, Zap } from "lucide-react";
 import { useReadyApp } from "@/components/AppProvider";
+import { getLesson } from "@/content";
 import { LearningPath } from "@/components/LearningPath";
 import { Mascot, type MascotMood } from "@/components/Mascot";
 import { Card, EmptyState, LinkButton, Pill, ProgressBar, SectionTitle, StatTile } from "@/components/ui";
-import { dailyId } from "@/lib/daily";
+import { buildDailyChallenge, dailyId } from "@/lib/daily";
+import { validateLessonSession } from "@/lib/lesson-session";
 import { recentMistakes } from "@/lib/stats";
 import { useDerived } from "@/lib/useDerived";
 import { addDays, cn, formatDuration } from "@/lib/util";
@@ -19,7 +21,7 @@ function greeting() {
 const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 
 export default function Dashboard() {
-  const { data, settings } = useReadyApp();
+  const { data, settings, lessonSessions } = useReadyApp();
   const d = useDerived();
   if (!d) return null;
 
@@ -30,10 +32,21 @@ export default function Dashboard() {
   const weekStart = addDays(d.today, -6);
   const weekLessons = Object.values(data.progress).filter((p) => !p.lessonId.startsWith("daily-") && p.completedAt.slice(0, 10) >= weekStart).length;
   const dailyDone = Boolean(data.progress[dailyId(d.today)]);
+  const resumeSession = lessonSessions
+    .map((session) => ({
+      session,
+      lesson: getLesson(session.lessonId) ?? (session.lessonId === dailyId(d.today) ? buildDailyChallenge(d.today, data.progress, settings) : null),
+    }))
+    .filter(({ session, lesson }) => lesson && validateLessonSession(session, lesson).ok)
+    .sort((a, b) => b.session.updatedAt.localeCompare(a.session.updatedAt))[0]?.session;
+  const resumeLesson = resumeSession ? getLesson(resumeSession.lessonId) : null;
 
   let mood: MascotMood = "happy";
   let message = "Ready when you are. Even five minutes counts!";
-  if (d.goalMet) {
+  if (resumeSession) {
+    mood = "thinking";
+    message = "You have a saved session ready to continue.";
+  } else if (d.goalMet) {
     mood = "cheer";
     message = "Daily goal reached — fantastic work!";
   } else if (d.due > 0) {
@@ -54,7 +67,11 @@ export default function Dashboard() {
           <h1 className="mt-3 text-4xl font-extrabold tracking-tight md:text-5xl">{greeting()}!</h1>
           <p className="mt-2 max-w-md text-[17px] font-medium text-ink/80">{message}</p>
           <div className="mt-5 flex flex-wrap gap-3">
-            {d.next ? (
+            {resumeSession ? (
+              <LinkButton href={`/lesson/${resumeSession.lessonId}`} variant="dark" size="lg">
+                {resumeSession.status === "failed" ? "Review saved attempt" : "Resume lesson"} <ArrowRight className="size-5" aria-hidden />
+              </LinkButton>
+            ) : d.next ? (
               <LinkButton href={`/lesson/${d.next.id}`} variant="dark" size="lg">
                 Continue learning <ArrowRight className="size-5" aria-hidden />
               </LinkButton>
@@ -63,7 +80,8 @@ export default function Dashboard() {
                 Course complete — practise <ArrowRight className="size-5" aria-hidden />
               </LinkButton>
             )}
-            {d.next && <p className="self-center text-sm font-bold text-ink/80">Next: {d.next.title}</p>}
+            {resumeSession && <p className="self-center text-sm font-bold text-ink/80">{resumeLesson?.title ?? "Daily challenge"} · exercise {resumeSession.exerciseIndex + 1}</p>}
+            {!resumeSession && d.next && <p className="self-center text-sm font-bold text-ink/80">Next: {d.next.title}</p>}
           </div>
         </div>
         <div className="mx-auto md:mx-0">

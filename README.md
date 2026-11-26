@@ -28,11 +28,20 @@ npm run build
 npm run start
 ```
 
-Unit tests (scoring, XP, spaced repetition, streaks, curriculum validation, backup, offline tutor):
+Unit tests (scoring, XP, spaced repetition, streaks, curriculum validation, backup, offline tutor, IndexedDB migration and session validation):
 
 ```bash
 npm test             # = vitest run
 ```
+
+Browser tests (Playwright + Chromium; installs a separate browser binary):
+
+```bash
+npx playwright install --with-deps chromium   # Linux/CI; on macOS/Windows use: npx playwright install chromium
+npm run test:e2e
+```
+
+CI runs these browser tests in a separate job. The app starts its own local Next.js server for tests; no AI credentials or paid services are needed.
 
 Type checking and linting:
 
@@ -72,6 +81,8 @@ Content is static, typed data validated by `validateCurriculum()` (also run in t
 * **Spaced repetition** (`src/lib/srs.ts`): familiarity 0–6 with intervals of 0, 1, 2, 4, 8, 16 and 32 days. “Again” drops two levels and returns in 10 minutes. New, overdue and frequently missed words are prioritised. Practising ahead of schedule earns no XP.
 * **Daily challenge**: 5 exercises chosen deterministically from the date and the lessons unlocked at the start of the day. XP once per day.
 * **Everything on the dashboard and progress pages is computed from saved attempts, activity and vocabulary** — there are no demo numbers.
+* **Lesson recovery**: unfinished and failed lessons save a versioned checkpoint (exercise, submitted answers, current answer/matching draft, hearts and elapsed time) in IndexedDB. Refreshing or leaving the page can be followed by an explicit resume or restart choice. A successful completion writes its attempt/activity/progress/vocabulary and removes its checkpoint in one transaction; an unfinished lesson is never counted as completion. If a storage write fails, the last committed checkpoint remains intact and the app warns that changes may be only in memory.
+* **IndexedDB upgrades**: the current schema is version 2. Upgrading v1 creates only the new `sessions` object store; it does not clear, recreate or rewrite existing learner stores. Session payloads are validated against the current lesson and version before recovery. Unknown versions or malformed checkpoints are rejected rather than migrated speculatively; export a backup before manually changing browser storage.
 
 ## Speech and listening
 
@@ -116,6 +127,8 @@ AI_MODEL=gpt-4o-mini
 These stay on the server and are never sent to the browser. In this mode your tutor messages are sent to that provider — the app says so wherever you enable it. See `.env.example`.
 
 If a provider is down, the tutor shows a clear error with **Try again** and **Continue with offline tutor** (the conversation continues from the same step). AI feedback is learning assistance, not a guaranteed linguistic or pronunciation assessment. Ollama only works when the app runs on the same machine/network as Ollama (not on Vercel).
+
+The tutor API currently allows 20 requests per IP in a 10-minute window using a bounded, in-memory process-local map. This is a best-effort throttle for a single process, **not** a distributed or durable quota: serverless instances/restarts have separate or reset counters, and proxy IP headers must be trusted/configured correctly. The connected production project for this app is Vercel `lumo` on the Hobby plan, deployed as Next.js Lambdas; this is exactly a multi-instance context where the in-memory map must not be treated as an enforceable quota. Before exposing paid external-provider credentials, configure and verify a shared atomic quota service compatible with the chosen Vercel plan (for example, a separately provisioned Upstash Redis integration) or a trusted edge rate limit, including limits and IP-header trust. No remote store or quota credentials are present in this repo, so none has been added or enabled.
 
 ## Data management
 

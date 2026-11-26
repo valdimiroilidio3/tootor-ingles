@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { Button } from "./ui";
 import { SpeakButton, SpeakControls, SpeechUnavailableNote, useSpeaker } from "./Speech";
 import { checkExercise, expectedAnswer, responseToText } from "@/lib/scoring";
-import type { Exercise, Response } from "@/lib/types";
+import type { Exercise, MatchingDraft, Response } from "@/lib/types";
 import { cn, seededShuffle } from "@/lib/util";
 
 export interface CheckedResult {
@@ -19,6 +19,10 @@ interface Props {
   onChecked: (r: CheckedResult) => void;
   onContinue: () => void;
   continueLabel?: string;
+  initialResponse?: Response | null;
+  initialMatchingDraft?: MatchingDraft;
+  initialResult?: CheckedResult | null;
+  onDraftChange?: (response: Response | null, matchingDraft?: MatchingDraft) => void;
 }
 
 function choiceOptions(ex: Exercise): string[] | null {
@@ -47,9 +51,14 @@ const INSTRUCTIONS: Record<Exercise["type"], string> = {
   reading: "Read and answer",
 };
 
-export function ExerciseView({ exercise, onChecked, onContinue, continueLabel = "Continue" }: Props) {
-  const [response, setResponse] = useState<Response | null>(null);
-  const [result, setResult] = useState<{ correct: boolean; note?: string } | null>(null);
+export function ExerciseView({ exercise, onChecked, onContinue, continueLabel = "Continue", initialResponse = null, initialMatchingDraft, initialResult = null, onDraftChange }: Props) {
+  const [response, setResponse] = useState<Response | null>(initialResponse);
+  const [result, setResult] = useState<{ correct: boolean; note?: string } | null>(() => initialResult ? { correct: initialResult.correct, note: exercise.type === "matching" && !initialResult.correct ? "review the pairs" : undefined } : null);
+  const changeResponse = (next: Response | null) => {
+    setResponse(next);
+    onDraftChange?.(next);
+  };
+  const changeMatchingDraft = (draft: MatchingDraft) => onDraftChange?.(response, draft);
 
   const submit = (resp: Response, forced?: boolean, note?: string) => {
     if (result) return;
@@ -84,7 +93,7 @@ export function ExerciseView({ exercise, onChecked, onContinue, continueLabel = 
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 pb-6 pt-6">
         <p className="mb-4 text-xs font-extrabold uppercase tracking-widest text-muted">{INSTRUCTIONS[exercise.type]}</p>
-        <Body exercise={exercise} response={response} setResponse={setResponse} result={result} onMatchDone={(mistakes, pairs) => submit(pairs, mistakes === 0, mistakes > 0 ? `${mistakes} wrong ${mistakes === 1 ? "try" : "tries"}` : undefined)} onSubmitText={() => response !== null && submit(response)} />
+        <Body exercise={exercise} response={response} setResponse={changeResponse} result={result} initialMatchingDraft={initialMatchingDraft} onMatchingDraftChange={changeMatchingDraft} onMatchDone={(mistakes, pairs) => submit(pairs, mistakes === 0, mistakes > 0 ? `${mistakes} wrong ${mistakes === 1 ? "try" : "tries"}` : undefined)} onSubmitText={() => response !== null && submit(response)} />
       </div>
 
       <footer
@@ -100,7 +109,7 @@ export function ExerciseView({ exercise, onChecked, onContinue, continueLabel = 
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="min-w-0 flex-1" aria-live="polite">
               <p className={cn("flex items-center gap-2 text-lg font-extrabold", result.correct ? "text-[#1d6b3c]" : "text-danger")}>
                 {result.correct ? <Check className="size-5" aria-hidden /> : <X className="size-5" aria-hidden />}
-                {result.correct ? (result.note ? "Done — but check the pairs" : "Correct!") : exercise.type === "matching" ? "Not quite" : "Correct answer:"}
+                {result.correct ? (exercise.type === "matching" ? "All pairs matched!" : "Correct!") : exercise.type === "matching" ? `Not quite${result.note ? ` — ${result.note}` : ""}` : "Correct answer:"}
               </p>
               {!result.correct && exercise.type !== "matching" && <p className="mt-0.5 font-bold">{expectedAnswer(exercise)}</p>}
               <p className="mt-1 text-sm text-ink/80">{exercise.explanation}</p>
@@ -127,12 +136,14 @@ interface BodyProps {
   exercise: Exercise;
   response: Response | null;
   setResponse: (r: Response | null) => void;
-  result: { correct: boolean } | null;
+  result: { correct: boolean; note?: string } | null;
+  initialMatchingDraft?: MatchingDraft;
+  onMatchingDraftChange: (draft: MatchingDraft) => void;
   onMatchDone: (mistakes: number, pairs: string[]) => void;
   onSubmitText: () => void;
 }
 
-function Body({ exercise: ex, response, setResponse, result, onMatchDone, onSubmitText }: BodyProps) {
+function Body({ exercise: ex, response, setResponse, result, initialMatchingDraft, onMatchingDraftChange, onMatchDone, onSubmitText }: BodyProps) {
   const locked = result !== null;
   const options = useMemo(() => {
     const o = choiceOptions(ex);
@@ -258,7 +269,7 @@ function Body({ exercise: ex, response, setResponse, result, onMatchDone, onSubm
       return <OrderBody ex={ex} response={response} setResponse={setResponse} locked={locked} />;
 
     case "matching":
-      return <MatchBody ex={ex} locked={locked} onDone={onMatchDone} />;
+      return <MatchBody ex={ex} locked={locked} initialDraft={initialMatchingDraft} onDraftChange={onMatchingDraftChange} onDone={onMatchDone} />;
 
     case "listening":
       return <ListeningBody ex={ex} response={response} setResponse={setResponse} locked={locked} choiceList={choiceList} onSubmitText={onSubmitText} />;
@@ -287,7 +298,18 @@ function ReadingBody({ ex, children }: { ex: Extract<Exercise, { type: "reading"
 
 function OrderBody({ ex, response, setResponse, locked }: { ex: Extract<Exercise, { type: "word-order" | "sentence-construction" }>; response: Response | null; setResponse: (r: Response | null) => void; locked: boolean }) {
   const tokens = useMemo(() => seededShuffle([...ex.answer.split(" "), ...ex.distractors], ex.id), [ex]);
-  const [picked, setPicked] = useState<number[]>([]);
+  const [picked, setPicked] = useState<number[]>(() => {
+    if (!Array.isArray(response)) return [];
+    const used = new Set<number>();
+    const indexes: number[] = [];
+    for (const word of response) {
+      const index = tokens.findIndex((token, i) => token === word && !used.has(i));
+      if (index < 0) return [];
+      used.add(index);
+      indexes.push(index);
+    }
+    return indexes;
+  });
   useEffect(() => {
     setResponse(picked.length ? picked.map((i) => tokens[i]) : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -333,14 +355,18 @@ function OrderBody({ ex, response, setResponse, locked }: { ex: Extract<Exercise
   );
 }
 
-function MatchBody({ ex, locked, onDone }: { ex: Extract<Exercise, { type: "matching" }>; locked: boolean; onDone: (mistakes: number, pairs: string[]) => void }) {
+function MatchBody({ ex, locked, initialDraft, onDraftChange, onDone }: { ex: Extract<Exercise, { type: "matching" }>; locked: boolean; initialDraft?: MatchingDraft; onDraftChange: (draft: MatchingDraft) => void; onDone: (mistakes: number, pairs: string[]) => void }) {
   const left = useMemo(() => seededShuffle(ex.pairs.map((p) => p.en), `${ex.id}-l`), [ex]);
   const right = useMemo(() => seededShuffle(ex.pairs.map((p) => p.pt), `${ex.id}-r`), [ex]);
-  const [selL, setSelL] = useState<string | null>(null);
-  const [matched, setMatched] = useState<string[]>([]);
+  const [selL, setSelL] = useState<string | null>(initialDraft?.selectedEnglish ?? null);
+  const [matched, setMatched] = useState<string[]>(() => (initialDraft?.matchedPairs ?? []).map((key) => ex.pairs.find((pair) => `${pair.en}::${pair.pt}` === key)?.en).filter((word): word is string => Boolean(word)));
   const [wrong, setWrong] = useState<string | null>(null);
-  const mistakes = useRef(0);
+  const mistakes = useRef(initialDraft?.mistakes ?? 0);
   const { play } = useSpeaker();
+
+  const persistDraft = (matchedWords: string[], selectedEnglish: string | null) => {
+    onDraftChange({ matchedPairs: matchedWords.map((word) => `${word}::${ex.pairs.find((pair) => pair.en === word)?.pt ?? ""}`), selectedEnglish, mistakes: mistakes.current });
+  };
 
   const pickRight = (pt: string) => {
     if (!selL || locked) return;
@@ -349,10 +375,12 @@ function MatchBody({ ex, locked, onDone }: { ex: Extract<Exercise, { type: "matc
       const next = [...matched, selL];
       setMatched(next);
       setSelL(null);
+      persistDraft(next, null);
       if (next.length === ex.pairs.length) onDone(mistakes.current, ex.pairs.map((p) => `${p.en}::${p.pt}`));
     } else {
       mistakes.current += 1;
       setWrong(pt);
+      persistDraft(matched, selL);
       setTimeout(() => setWrong(null), 500);
     }
   };
@@ -374,6 +402,7 @@ function MatchBody({ ex, locked, onDone }: { ex: Extract<Exercise, { type: "matc
                 disabled={done || locked}
                 onClick={() => {
                   setSelL(en);
+                  persistDraft(matched, en);
                   void play(en);
                 }}
                 aria-pressed={selL === en}

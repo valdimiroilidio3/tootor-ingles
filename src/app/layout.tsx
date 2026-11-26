@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "@fontsource-variable/inter";
+import { MotionConfig } from "framer-motion";
 import "./globals.css";
 import { AppProvider } from "@/components/AppProvider";
 import { Shell } from "@/components/Shell";
@@ -21,7 +22,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body className="antialiased">
         <AppProvider>
-          <Shell>{children}</Shell>
+          <MotionConfig reducedMotion="user">
+            <Shell>{children}</Shell>
+          </MotionConfig>
         </AppProvider>
       </body>
     </html>

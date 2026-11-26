@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { BarChart3, BookOpen, Flame, Home, Layers, MessageCircle, Mic, MoreHorizontal, Route, Settings, X, Zap } from "lucide-react";
 import { useApp } from "./AppProvider";
@@ -60,6 +60,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { status, data, storageError, dismissStorageError } = useApp();
   const [moreOpen, setMoreOpen] = useState(false);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreDialogRef = useRef<HTMLDivElement>(null);
 
   const onboarded = Boolean(data.settings?.onboarded);
   const isOnboarding = pathname === "/onboarding";
@@ -71,6 +73,40 @@ export function Shell({ children }: { children: ReactNode }) {
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMoreOpen(false), [pathname]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const dialog = moreDialogRef.current;
+    const trigger = moreTriggerRef.current;
+    const focusables = () => Array.from(dialog?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])') ?? []).filter((el) => el.tabIndex >= 0);
+    document.body.style.overflow = "hidden";
+    focusables()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMoreOpen(false);
+      } else if (event.key === "Tab") {
+        const items = focusables();
+        if (items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      trigger?.focus();
+    };
+  }, [moreOpen]);
 
   if (status === "loading" || (!onboarded && !isOnboarding)) {
     return (
@@ -102,6 +138,7 @@ export function Shell({ children }: { children: ReactNode }) {
   if (isOnboarding || isLesson) {
     return (
       <>
+        <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-full focus:bg-brand focus:px-4 focus:py-2 focus:font-bold">Skip to lesson content</a>
         {banner}
         <main id="main">{children}</main>
       </>
@@ -140,7 +177,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
-        <div className="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-cream/95 px-4 py-3 backdrop-blur md:hidden">
+        <div className="safe-top sticky top-0 z-30 flex items-center justify-between border-b border-line bg-cream/95 px-4 pb-3 backdrop-blur md:hidden">
           <Brand />
           <TopStats />
         </div>
@@ -167,7 +204,7 @@ export function Shell({ children }: { children: ReactNode }) {
             );
           })}
           <li>
-            <button onClick={() => setMoreOpen(true)} aria-haspopup="dialog" aria-expanded={moreOpen} className="flex w-full flex-col items-center gap-0.5 py-2 text-[11px] font-bold">
+            <button ref={moreTriggerRef} onClick={() => setMoreOpen(true)} aria-haspopup="dialog" aria-expanded={moreOpen} className="flex min-h-12 w-full flex-col items-center gap-0.5 py-1 text-[11px] font-bold">
               <span className={cn("grid h-8 w-14 place-items-center rounded-full", MORE_MOBILE.some((n) => isActive(pathname, n.href)) && "bg-brand")}>
                 <MoreHorizontal className="size-5" aria-hidden />
               </span>
@@ -180,18 +217,20 @@ export function Shell({ children }: { children: ReactNode }) {
       <AnimatePresence>
         {moreOpen && (
           <motion.div className="fixed inset-0 z-50 md:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <button aria-label="Close menu" className="absolute inset-0 bg-ink/40" onClick={() => setMoreOpen(false)} />
+            <button aria-label="Close menu" tabIndex={-1} className="absolute inset-0 bg-ink/40" onClick={() => setMoreOpen(false)} />
             <motion.div
+              ref={moreDialogRef}
               role="dialog"
-              aria-label="More"
-              className="safe-bottom absolute inset-x-0 bottom-0 rounded-t-3xl bg-white p-5 shadow-pop"
+              aria-modal="true"
+              aria-labelledby="more-menu-title"
+              className="safe-bottom absolute inset-x-0 bottom-0 max-h-[85dvh] overflow-y-auto rounded-t-3xl bg-white p-5 shadow-pop"
               initial={{ y: 80 }}
               animate={{ y: 0 }}
               exit={{ y: 80 }}
               transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
               <div className="mb-3 flex items-center justify-between">
-                <p className="text-lg font-extrabold">More</p>
+                <p id="more-menu-title" className="text-lg font-extrabold">More</p>
                 <button onClick={() => setMoreOpen(false)} aria-label="Close" className="grid size-9 place-items-center rounded-full bg-cream">
                   <X className="size-5" />
                 </button>

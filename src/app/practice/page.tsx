@@ -59,7 +59,7 @@ export default function PracticePage() {
                         {s.phrases.map((p) => (
                           <li key={p.en} className="flex items-center gap-2 rounded-2xl bg-cream p-3">
                             <SpeakButton text={p.en} size="sm" label={`Play: ${p.en}`} />
-                            <button onClick={() => { setTarget(p); document.getElementById("pronunciation")?.scrollIntoView({ behavior: "smooth" }); }} className="min-w-0 flex-1 text-left" aria-label={`Practise pronouncing: ${p.en}`}>
+                            <button onClick={() => { setTarget(p); document.getElementById("pronunciation")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); }} className="min-w-0 flex-1 text-left" aria-label={`Practise pronouncing: ${p.en}`}>
                               <span className="block text-[15px] font-bold">{p.en}</span>
                               <span className="block text-xs text-muted">{p.pt}</span>
                             </button>

@@ -2,18 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight, Clock, Heart, HeartCrack, Lock, RotateCcw, Target, X, Zap } from "lucide-react";
 import { useReadyApp, type FinishLessonResult, type LessonResultInput } from "./AppProvider";
 import { ExerciseView } from "./ExerciseView";
 import { Mascot } from "./Mascot";
 import { SpeakControls, SpeechUnavailableNote } from "./Speech";
-import { Button, Card, LinkButton, Pill, ProgressBar } from "./ui";
+import { Button, Card, LinkButton, Notice, Pill, ProgressBar } from "./ui";
 import { getLesson, isUnlocked, LESSONS, lessonIndex } from "@/content";
 import { buildDailyChallenge, dailyId, DAILY_PREFIX } from "@/lib/daily";
-import { exercisePrompt, expectedAnswer, MAX_HEARTS } from "@/lib/scoring";
-import type { Lesson } from "@/lib/types";
+import { exercisePrompt, expectedAnswer, MAX_HEARTS, scoreLesson } from "@/lib/scoring";
+import { validateLessonSession } from "@/lib/lesson-session";
+import type { Lesson, LessonSession, MatchingDraft, Response } from "@/lib/types";
 import { cn, dateKey, formatDuration } from "@/lib/util";
 
 type Stage = "intro" | "play" | "done" | "failed";
@@ -67,39 +68,157 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
   const router = useRouter();
-  const { data, finishLesson } = useReadyApp();
+  const { data, finishLesson, lessonSessions, saveLessonSession } = useReadyApp();
   const [stage, setStage] = useState<Stage>("intro");
   const [index, setIndex] = useState(0);
   const [hearts, setHearts] = useState(MAX_HEARTS);
   const [results, setResults] = useState<LessonResultInput[]>([]);
+  const [draft, setDraft] = useState<Response | null>(null);
+  const [matchingDraft, setMatchingDraft] = useState<MatchingDraft | undefined>();
   const [summary, setSummary] = useState<(FinishLessonResult & { seconds: number }) | null>(null);
   const [saving, setSaving] = useState(false);
-  const startedAt = useRef<number>(0);
-  const heartsRef = useRef(MAX_HEARTS);
-  const resultsRef = useRef<LessonResultInput[]>([]);
-
+  const [starting, setStarting] = useState(false);
+  const storedSession = lessonSessions.find((session) => session.lessonId === lesson.id);
+  const recovery = storedSession ? validateLessonSession(storedSession, lesson) : null;
+  const recoverableSession = recovery?.ok ? recovery.session : null;
   const alreadyDone = Boolean(data.progress[lesson.id]);
   const exercise = lesson.exercises[index];
 
-  const start = () => {
+  const startedAt = useRef<number>(0);
+  const elapsedBeforeStart = useRef(0);
+  const indexRef = useRef(0);
+  const heartsRef = useRef(MAX_HEARTS);
+  const resultsRef = useRef<LessonResultInput[]>([]);
+  const draftRef = useRef<Response | null>(null);
+  const matchingDraftRef = useRef<MatchingDraft | undefined>(undefined);
+  const savingRef = useRef(false);
+  const startingRef = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const writeQueue = useRef<Promise<boolean>>(Promise.resolve(true));
+  const activeSession = useRef(false);
+
+  const buildSession = (status: LessonSession["status"] = "in-progress"): LessonSession => ({
+    lessonId: lesson.id,
+    version: 1,
+    status,
+    exerciseIndex: indexRef.current,
+    results: resultsRef.current,
+    heartsLeft: heartsRef.current,
+    draft: draftRef.current,
+    matchingDraft: matchingDraftRef.current,
+    elapsedSeconds: Math.min(25 * 60, elapsedBeforeStart.current + (startedAt.current ? (Date.now() - startedAt.current) / 1_000 : 0)),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const enqueueSessionSave = (status: LessonSession["status"] = "in-progress") => {
+    const snapshot = buildSession(status);
+    const pending = writeQueue.current.catch(() => false).then(() => saveLessonSession(snapshot));
+    writeQueue.current = pending;
+    return pending;
+  };
+
+  const flushSessionSave = async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    return enqueueSessionSave();
+  };
+
+  const scheduleSessionSave = () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      void enqueueSessionSave();
+    }, 180);
+  };
+
+  useEffect(() => {
+    const persistOnHide = () => {
+      if (!activeSession.current) return;
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      void enqueueSessionSave();
+    };
+    window.addEventListener("pagehide", persistOnHide);
+    return () => {
+      window.removeEventListener("pagehide", persistOnHide);
+      persistOnHide();
+    };
+    // The handler reads mutable refs so it does not need to be rebound on each answer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (stage === "play" && startedAt.current === 0) startedAt.current = Date.now();
+  }, [stage]);
+
+  const resetDraftAndResults = () => {
+    indexRef.current = 0;
+    heartsRef.current = MAX_HEARTS;
+    resultsRef.current = [];
+    draftRef.current = null;
+    matchingDraftRef.current = undefined;
+    elapsedBeforeStart.current = 0;
+    setIndex(0);
+    setHearts(MAX_HEARTS);
+    setResults([]);
+    setDraft(null);
+    setMatchingDraft(undefined);
+    setSummary(null);
+  };
+
+  const startFresh = async () => {
+    if (startingRef.current || savingRef.current) return;
+    startingRef.current = true;
+    setStarting(true);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    resetDraftAndResults();
     startedAt.current = Date.now();
+    activeSession.current = true;
+    await enqueueSessionSave();
+    setStarting(false);
+    startingRef.current = false;
     setStage("play");
   };
 
-  const restart = () => {
-    heartsRef.current = MAX_HEARTS;
-    resultsRef.current = [];
-    setHearts(MAX_HEARTS);
-    setResults([]);
-    setIndex(0);
-    setSummary(null);
-    startedAt.current = Date.now();
+  const resume = () => {
+    if (!recoverableSession || savingRef.current) return;
+    const session = recoverableSession;
+    indexRef.current = session.exerciseIndex;
+    heartsRef.current = session.heartsLeft;
+    resultsRef.current = session.results;
+    draftRef.current = session.draft;
+    matchingDraftRef.current = session.matchingDraft;
+    elapsedBeforeStart.current = session.elapsedSeconds;
+    setIndex(session.exerciseIndex);
+    setHearts(session.heartsLeft);
+    setResults(session.results);
+    setDraft(session.draft);
+    setMatchingDraft(session.matchingDraft);
+    setStarting(false);
+    if (session.status === "failed") {
+      const score = scoreLesson(session.results);
+      setSummary({ xpAwarded: 0, firstCompletion: false, accuracy: score.accuracy, stars: score.stars, newBadges: [], wordsAdded: 0, seconds: session.elapsedSeconds, persisted: true });
+      activeSession.current = false;
+      setStage("failed");
+      return;
+    }
+    startedAt.current = 0;
+    activeSession.current = true;
     setStage("play");
   };
 
   const finish = async (passed: boolean) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    activeSession.current = false;
     setSaving(true);
-    const seconds = Math.min(25 * 60, (Date.now() - startedAt.current) / 1000);
+    await flushSessionSave();
+    const seconds = Math.min(25 * 60, elapsedBeforeStart.current + (Date.now() - startedAt.current) / 1_000);
+    const failedSession = passed ? undefined : buildSession("failed");
     const res = await finishLesson({
       lessonId: lesson.id,
       kind: isDaily ? "daily" : "lesson",
@@ -108,13 +227,25 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
       results: resultsRef.current,
       seconds,
       vocab: lesson.vocabulary,
+      session: failedSession,
     });
     setSummary({ ...res, seconds });
     setSaving(false);
+    savingRef.current = false;
+    if (res.persisted) activeSession.current = false;
     setStage(passed ? "done" : "failed");
   };
 
+  const onDraftChange = (response: Response | null, nextMatchingDraft?: MatchingDraft) => {
+    draftRef.current = response;
+    matchingDraftRef.current = nextMatchingDraft;
+    setDraft(response);
+    setMatchingDraft(nextMatchingDraft);
+    scheduleSessionSave();
+  };
+
   const onChecked = ({ correct, answer }: { correct: boolean; answer: string }) => {
+    if (!exercise || resultsRef.current.some((result) => result.exerciseId === exercise.id)) return;
     const r: LessonResultInput = {
       exerciseId: exercise.id,
       category: exercise.category,
@@ -130,17 +261,32 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
       heartsRef.current = Math.max(0, heartsRef.current - 1);
       setHearts(heartsRef.current);
     }
+    void flushSessionSave();
   };
 
   const onContinue = () => {
-    if (saving) return;
-    if (heartsRef.current === 0) void finish(false);
-    else if (index + 1 >= lesson.exercises.length) void finish(true);
-    else setIndex(index + 1);
+    if (savingRef.current || startingRef.current) return;
+    if (heartsRef.current === 0) {
+      void finish(false);
+    } else if (indexRef.current + 1 >= lesson.exercises.length) {
+      void finish(true);
+    } else {
+      indexRef.current += 1;
+      draftRef.current = null;
+      matchingDraftRef.current = undefined;
+      setIndex(indexRef.current);
+      setDraft(null);
+      setMatchingDraft(undefined);
+      void flushSessionSave();
+    }
   };
 
-  const leave = () => {
-    if (stage === "play" && !window.confirm("Leave this lesson? Your answers so far won't be saved.")) return;
+  const leave = async () => {
+    if (stage === "play" && !window.confirm("Your session is saved on this device. You can resume it later. Leave now?")) return;
+    if (stage === "play") {
+      await flushSessionSave();
+      activeSession.current = false;
+    }
     router.push(isDaily ? "/" : "/learn");
   };
 
@@ -189,10 +335,35 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
             </ul>
           </section>
         )}
-        <div className="sticky bottom-4 mt-8">
-          <Button size="lg" onClick={start} className="w-full shadow-pop">
-            Start lesson <ArrowRight className="size-5" aria-hidden />
-          </Button>
+        <div className="sticky bottom-4 mt-8 space-y-3">
+          {recoverableSession ? (
+            <Card className="border-brand-dark/40 bg-brand-soft">
+              <h2 id="resume-title" className="font-extrabold">{recoverableSession.status === "failed" ? "Your last attempt is saved" : "Pick up where you left off"}</h2>
+              <p className="mt-1 text-sm text-muted">
+                {recoverableSession.status === "failed"
+                  ? "Your answers and feedback are ready to review. They will not be submitted again."
+                  : `Exercise ${recoverableSession.exerciseIndex + 1} of ${lesson.exercises.length} · saved ${new Date(recoverableSession.updatedAt).toLocaleString()}.`}
+              </p>
+              <Button size="lg" onClick={resume} className="mt-4 w-full">
+                {recoverableSession.status === "failed" ? "Review saved attempt" : "Resume lesson"} <ArrowRight className="size-5" aria-hidden />
+              </Button>
+              <Button size="md" variant="secondary" loading={starting} onClick={() => void startFresh()} className="mt-2 w-full">
+                Restart from beginning
+              </Button>
+            </Card>
+          ) : storedSession ? (
+            <>
+              <div role="alert" className="rounded-2xl border border-danger/30 bg-danger-soft p-4 text-sm">
+                <p className="font-extrabold">{recovery && !recovery.ok && recovery.reason === "incompatible" ? "Saved session needs a newer app version" : "Saved session could not be restored"}</p>
+                <p className="mt-1">The checkpoint has not been modified. Choose “Start fresh” to replace it deliberately.</p>
+              </div>
+              <Button size="lg" loading={starting} onClick={() => void startFresh()} className="w-full">Start fresh <ArrowRight className="size-5" aria-hidden /></Button>
+            </>
+          ) : (
+            <Button size="lg" loading={starting} onClick={() => void startFresh()} className="w-full shadow-soft">
+              Start lesson <ArrowRight className="size-5" aria-hidden />
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -206,13 +377,23 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
           <button onClick={leave} aria-label="Leave lesson" className="grid size-10 shrink-0 place-items-center rounded-full bg-white shadow-soft">
             <X className="size-5" />
           </button>
-          <ProgressBar value={(index / lesson.exercises.length) * 100} label="Lesson progress" className="flex-1" />
+          <ProgressBar value={((index + (results[index]?.exerciseId === exercise.id ? 1 : 0)) / lesson.exercises.length) * 100} label={`Lesson progress, exercise ${index + 1} of ${lesson.exercises.length}`} className="flex-1" />
           <div className="flex items-center gap-1 font-extrabold" aria-label={`${hearts} hearts left`}>
             <Heart className={cn("size-6", hearts > 0 ? "fill-danger text-danger" : "text-muted")} aria-hidden />
             {hearts}
           </div>
         </div>
-        <ExerciseView key={exercise.id} exercise={exercise} onChecked={onChecked} onContinue={onContinue} continueLabel={index + 1 >= lesson.exercises.length || hearts === 0 ? "Finish" : "Continue"} />
+        <ExerciseView
+          key={exercise.id}
+          exercise={exercise}
+          onChecked={onChecked}
+          onContinue={onContinue}
+          onDraftChange={onDraftChange}
+          initialResponse={draft}
+          initialMatchingDraft={matchingDraft}
+          initialResult={results[index]?.exerciseId === exercise.id ? { correct: results[index].correct, answer: results[index].answer } : null}
+          continueLabel={index + 1 >= lesson.exercises.length || hearts === 0 ? "Finish" : "Continue"}
+        />
         <span className="sr-only" aria-live="polite">
           Question {index + 1} of {lesson.exercises.length}
         </span>
@@ -246,6 +427,11 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
         )}
       </div>
 
+      {summary && !summary.persisted && (
+        <Notice tone="danger" title="Lesson result is not saved yet">
+          Your existing checkpoint is still on this device. XP, attempts, activity and vocabulary were not committed. Check the storage warning, then retry saving this result.
+        </Notice>
+      )}
       {summary && (
         <div className="mt-6 grid grid-cols-3 gap-3 text-center">
           <Card className="p-4">
@@ -306,12 +492,13 @@ function Runner({ lesson, isDaily }: { lesson: Lesson; isDaily: boolean }) {
       </section>
 
       <div className="mt-8 grid gap-3 sm:grid-cols-2">
+        {summary && !summary.persisted && <Button size="lg" loading={saving} onClick={() => void finish(passed)} className="sm:col-span-2">Retry saving result</Button>}
         {passed && next && (
           <LinkButton href={`/lesson/${next.id}`} size="lg" className="sm:col-span-2">
             Next: {next.title} <ArrowRight className="size-5" aria-hidden />
           </LinkButton>
         )}
-        <Button variant="secondary" size="lg" onClick={restart}>
+        <Button variant="secondary" size="lg" loading={starting} onClick={() => void startFresh()}>
           <RotateCcw className="size-5" aria-hidden /> {passed ? "Practice again" : "Try again"}
         </Button>
         <LinkButton href={isDaily ? "/" : "/learn"} variant={passed && !next ? "primary" : "secondary"} size="lg">
