@@ -63,6 +63,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<"loading" | "ready">("loading");
   const [storageError, setStorageError] = useState<string | null>(null);
   const ref = useRef<AppData>(EMPTY_DATA);
+  const inFlightLessonFinishes = useRef(new Map<string, Promise<FinishLessonResult>>());
 
   const commit = useCallback((next: AppData) => {
     ref.current = next;
@@ -197,74 +198,90 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const finishLesson = useCallback<AppContextValue["finishLesson"]>(
-    async (input) => {
-      const before = ref.current;
-      const badgesBefore = new Set(evaluateBadges(before).filter((b) => b.unlocked).map((b) => b.id));
-      const now = new Date();
-      const score = scoreLesson(input.results);
-      const existing = before.progress[input.lessonId];
-      const first = input.passed && !existing;
-      const xp = first ? lessonXp(input.baseXp, score.accuracy) : 0;
+    (input) => {
+      const existingFinish = inFlightLessonFinishes.current.get(input.lessonId);
+      if (existingFinish) return existingFinish;
+      const operation = (async () => {
+        const before = ref.current;
+        const badgesBefore = new Set(evaluateBadges(before).filter((b) => b.unlocked).map((b) => b.id));
+        const now = new Date();
+        const score = scoreLesson(input.results);
+        const existing = before.progress[input.lessonId];
+        const first = input.passed && !existing;
+        const xp = first ? lessonXp(input.baseXp, score.accuracy) : 0;
 
-      const attempts: Attempt[] = input.results.map((r) => ({
-        id: uid(),
-        lessonId: input.lessonId,
-        exerciseId: r.exerciseId,
-        category: r.category,
-        type: r.type,
-        correct: r.correct,
-        answer: r.answer,
-        expected: r.expected,
-        prompt: r.prompt,
-        at: now.toISOString(),
-      }));
-
-      const activity: ActivityEntry = {
-        id: uid(),
-        date: dateKey(now),
-        at: now.toISOString(),
-        xp,
-        seconds: Math.max(0, Math.round(input.seconds)),
-        kind: input.kind,
-        refId: input.lessonId,
-      };
-
-      let progress = before.progress;
-      let progressRecord: LessonProgress | null = null;
-      if (input.passed) {
-        progressRecord = {
+        const attempts: Attempt[] = input.results.map((r) => ({
+          id: uid(),
           lessonId: input.lessonId,
-          completedAt: existing?.completedAt ?? now.toISOString(),
-          bestAccuracy: Math.max(existing?.bestAccuracy ?? 0, score.accuracy),
-          bestStars: Math.max(existing?.bestStars ?? 1, score.stars) as 1 | 2 | 3,
-          timesCompleted: (existing?.timesCompleted ?? 0) + 1,
-          xpAwarded: (existing?.xpAwarded ?? 0) + xp,
+          exerciseId: r.exerciseId,
+          category: r.category,
+          type: r.type,
+          correct: r.correct,
+          answer: r.answer,
+          expected: r.expected,
+          prompt: r.prompt,
+          at: now.toISOString(),
+        }));
+
+        const activity: ActivityEntry = {
+          id: uid(),
+          date: dateKey(now),
+          at: now.toISOString(),
+          xp,
+          seconds: Math.max(0, Math.round(input.seconds)),
+          kind: input.kind,
+          refId: input.lessonId,
         };
-        progress = { ...progress, [input.lessonId]: progressRecord };
-      }
 
-      const known = new Set(before.vocab.map((v) => v.word.trim().toLowerCase()));
-      const newVocab = input.passed
-        ? input.vocab.filter((v) => !known.has(v.word.trim().toLowerCase())).map((v) => createVocabItem(v, "lesson", now))
-        : [];
+        let progress = before.progress;
+        let progressRecord: LessonProgress | null = null;
+        if (input.passed) {
+          progressRecord = {
+            lessonId: input.lessonId,
+            completedAt: existing?.completedAt ?? now.toISOString(),
+            bestAccuracy: Math.max(existing?.bestAccuracy ?? 0, score.accuracy),
+            bestStars: Math.max(existing?.bestStars ?? 1, score.stars) as 1 | 2 | 3,
+            timesCompleted: (existing?.timesCompleted ?? 0) + 1,
+            xpAwarded: (existing?.xpAwarded ?? 0) + xp,
+          };
+          progress = { ...progress, [input.lessonId]: progressRecord };
+        }
 
-      const next: AppData = {
-        ...before,
-        progress,
-        attempts: [...before.attempts, ...attempts],
-        activity: [...before.activity, activity],
-        vocab: [...before.vocab, ...newVocab],
-      };
-      commit(next);
-      await safe(async () => {
-        await idb.putMany("attempts", attempts);
-        await idb.put("activity", activity);
-        if (progressRecord) await idb.put("progress", progressRecord);
-        await idb.putMany("vocab", newVocab);
-      });
+        const known = new Set(before.vocab.map((v) => v.word.trim().toLowerCase()));
+        const newVocab = input.passed
+          ? input.vocab.filter((v) => !known.has(v.word.trim().toLowerCase())).map((v) => createVocabItem(v, "lesson", now))
+          : [];
 
-      const newBadges = evaluateBadges(next).filter((b) => b.unlocked && !badgesBefore.has(b.id));
-      return { xpAwarded: xp, firstCompletion: first, accuracy: score.accuracy, stars: score.stars, newBadges, wordsAdded: newVocab.length };
+        const next: AppData = {
+          ...before,
+          progress,
+          attempts: [...before.attempts, ...attempts],
+          activity: [...before.activity, activity],
+          vocab: [...before.vocab, ...newVocab],
+        };
+        commit(next);
+        await safe(() =>
+          idb.writeBatch({
+            attempts,
+            activity: [activity],
+            progress: progressRecord ? [progressRecord] : [],
+            vocab: newVocab,
+          }),
+        );
+
+        const newBadges = evaluateBadges(next).filter((b) => b.unlocked && !badgesBefore.has(b.id));
+        return { xpAwarded: xp, firstCompletion: first, accuracy: score.accuracy, stars: score.stars, newBadges, wordsAdded: newVocab.length };
+      })();
+      inFlightLessonFinishes.current.set(input.lessonId, operation);
+      void operation.then(
+        () => {
+          if (inFlightLessonFinishes.current.get(input.lessonId) === operation) inFlightLessonFinishes.current.delete(input.lessonId);
+        },
+        () => {
+          if (inFlightLessonFinishes.current.get(input.lessonId) === operation) inFlightLessonFinishes.current.delete(input.lessonId);
+        },
+      );
+      return operation;
     },
     [commit, safe],
   );

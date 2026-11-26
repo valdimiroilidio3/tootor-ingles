@@ -85,30 +85,53 @@ export async function putMany<T>(store: StoreName, values: T[]): Promise<void> {
   });
 }
 
+function runTransaction(stores: readonly StoreName[], enqueue: (tx: IDBTransaction) => void): Promise<void> {
+  if (stores.length === 0) return Promise.resolve();
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction([...stores], "readwrite");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error("Database transaction failed."));
+        tx.onabort = () => reject(tx.error ?? new Error("Database transaction aborted."));
+        try {
+          enqueue(tx);
+        } catch (error) {
+          try {
+            tx.abort();
+          } catch {
+            // The transaction may already have aborted.
+          }
+          reject(error instanceof Error ? error : new Error("Could not queue database writes."));
+        }
+      }),
+  );
+}
+
 export async function clearAll(stores: readonly StoreName[] = STORES): Promise<void> {
-  if (stores.length === 0) return;
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction([...stores], "readwrite");
+  await runTransaction(stores, (tx) => {
     for (const store of stores) tx.objectStore(store).clear();
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error("Database transaction failed."));
-    tx.onabort = () => reject(tx.error ?? new Error("Database transaction aborted."));
+  });
+}
+
+/** Writes related records in one transaction so a lesson completion cannot be partially saved. */
+export async function writeBatch(records: Partial<Record<StoreName, unknown[]>>): Promise<void> {
+  const stores = STORES.filter((store) => records[store] !== undefined);
+  await runTransaction(stores, (tx) => {
+    for (const store of stores) {
+      const objectStore = tx.objectStore(store);
+      for (const record of records[store] ?? []) objectStore.put(record);
+    }
   });
 }
 
 /** Atomically replaces learning data: a failed import leaves the previous data intact. */
 export async function replaceAll(records: Partial<Record<StoreName, unknown[]>>): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction([...STORES], "readwrite");
+  await runTransaction(STORES, (tx) => {
     for (const store of STORES) {
       const objectStore = tx.objectStore(store);
       objectStore.clear();
       for (const record of records[store] ?? []) objectStore.put(record);
     }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error("Database transaction failed."));
-    tx.onabort = () => reject(tx.error ?? new Error("Database transaction aborted."));
   });
 }
