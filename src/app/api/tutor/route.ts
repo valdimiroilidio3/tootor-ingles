@@ -28,16 +28,18 @@ const isProvider = (v: unknown): v is Provider => v === "ollama" || v === "exter
 const requestWindows = new Map<string, { count: number; resetAt: number }>();
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_LIMIT = 20;
+const MAX_RATE_LIMIT_KEYS = 5_000;
 const MAX_BODY_BYTES = 16 * 1024;
 
 function takeRateLimit(req: Request, now = Date.now()): boolean {
   const ip = req.headers.get("x-real-ip") ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   const current = requestWindows.get(ip);
   if (!current || current.resetAt <= now) {
-    requestWindows.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    if (requestWindows.size > 2_000) {
+    if (requestWindows.size >= MAX_RATE_LIMIT_KEYS) {
       for (const [key, value] of requestWindows) if (value.resetAt <= now) requestWindows.delete(key);
+      if (requestWindows.size >= MAX_RATE_LIMIT_KEYS) return false;
     }
+    requestWindows.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return true;
   }
   if (current.count >= RATE_LIMIT) return false;
