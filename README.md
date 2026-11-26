@@ -69,7 +69,7 @@ Deploying to **Vercel** works out of the box (no environment variables are requi
 
 ## Curriculum
 
-16 lessons in `src/content`: **10 A1** foundations, **3 A2** and **3 B1** lessons. Every lesson has an objective (EN + PT), CEFR-inspired level, vocabulary with examples, 8–12 exercises with Portuguese explanations and an XP reward. All nine exercise types are used: multiple choice, translation, word ordering, matching, fill-in-the-blank, listening, dialogue completion, sentence construction and reading comprehension.
+20 lessons in `src/content`: **12 A1** foundations, **4 A2** and **4 B1** lessons. The expanded units add weather and home vocabulary at A1, health and appointments at A2, and travel problems and polite complaints at B1. Every lesson has an objective (EN + PT), CEFR-inspired level, vocabulary with examples, 8–12 exercises with Portuguese explanations and an XP reward. All nine exercise types are used: multiple choice, translation, word ordering, matching, fill-in-the-blank, listening, dialogue completion, sentence construction and reading comprehension.
 
 Content is static, typed data validated by `validateCurriculum()` (also run in the unit tests). Exercise options are shuffled with a **seeded** shuffle, so nothing changes randomly between renders. To add a lesson, create it with the helpers in `src/content/builders.ts` and add it to `LESSONS` in `src/content/index.ts`.
 

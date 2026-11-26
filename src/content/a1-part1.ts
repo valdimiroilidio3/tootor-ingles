@@ -1,4 +1,4 @@
-import { dlg, fill, lesson, listenChoose, listenType, match, mc, sc, tr, wo } from "./builders";
+import { dlg, fill, lesson, listenChoose, listenType, match, mc, reading, sc, tr, wo } from "./builders";
 
 export const a1Part1 = [
   lesson({
@@ -149,6 +149,47 @@ export const a1Part1 = [
       listenChoose("Can I have some water, please?", ["Can I have some wine, please?", "Can I have some bread, please?"], "Você ouviu “water” — água. “Can I have…?” é um pedido educado."),
       dlg("At a café.", [["Waiter", "What would you like?"], ["You", "___"]], "I would like a coffee, please.", ["I am a coffee, please.", "Yes, I am hungry coffee.", "Goodbye, thank you."], "Responda ao garçom com “I would like…”."),
       sc("Você quer água?", "Do you want water", ["are", "does"], "Perguntas com “you” usam “Do”: Do you want…?"),
+    ],
+  }),
+  lesson({
+    id: "a1-weather-seasons",
+    unit: "A1 · Foundations",
+    title: "Weather & Seasons",
+    titlePt: "Clima e estações do ano",
+    cefr: "A1",
+    emoji: "🌦️",
+    objective: "Describe simple weather conditions and talk about the seasons.",
+    objectivePt: "Descrever o clima e falar sobre as estações do ano.",
+    vocab: [
+      ["Sunny", "Ensolarado", "It is sunny today.", "Está ensolarado hoje.", "Weather"],
+      ["Cloudy", "Nublado", "It is cloudy this morning.", "Está nublado esta manhã.", "Weather"],
+      ["Rainy", "Chuvoso", "It is rainy in April.", "Chove em abril.", "Weather"],
+      ["Windy", "Ventando", "It is windy near the beach.", "Está ventando perto da praia.", "Weather"],
+      ["Hot", "Quente", "Summer is hot here.", "O verão é quente aqui.", "Temperature"],
+      ["Cold", "Frio", "It is cold today.", "Está frio hoje.", "Temperature"],
+      ["Spring", "Primavera", "Flowers grow in spring.", "As flores crescem na primavera.", "Seasons"],
+      ["Summer", "Verão", "Summer is hot and sunny.", "O verão é quente e ensolarado.", "Seasons"],
+      ["Autumn", "Outono", "The leaves change color in autumn.", "As folhas mudam de cor no outono.", "Seasons"],
+      ["Winter", "Inverno", "Winter is cold and rainy here.", "O inverno é frio e chuvoso aqui.", "Seasons"],
+    ],
+    exercises: [
+      mc("The sky is gray and there are many clouds. It is ___.", "cloudy", ["sunny", "hot", "windy"], "Cloudy = nublado; sunny = ensolarado."),
+      mc("Which season usually comes after spring?", "Summer", ["Winter", "Autumn", "Spring"], "A ordem comum das estações é spring, summer, autumn/fall e winter."),
+      match([["sunny", "ensolarado"], ["cloudy", "nublado"], ["rainy", "chuvoso"], ["windy", "ventando"], ["cold", "frio"]]),
+      fill("It ___ sunny today.", "Está ensolarado hoje.", "is", ["are", "am", "be"], "Para falar do clima usamos “It is…”: It is sunny."),
+      tr("Está frio hoje.", ["It is cold today", "It's cold today"], "Em inglês usamos “It is” ou a contração “It’s” para falar do clima."),
+      wo("Está quente e ensolarado.", "It is hot and sunny", "A estrutura é “It is + adjetivos do clima”."),
+      listenChoose("It is cloudy this morning", ["It is sunny this morning", "It is windy this morning"], "Cloudy significa nublado."),
+      dlg("Making a plan for the afternoon.", [["A", "What is the weather like today?"], ["B", "___"]], "It is warm and sunny.", ["It are winter and Monday.", "I am weather today.", "It is a cloudy umbrella."], "Perguntamos “What is the weather like?” e respondemos com “It is…” + clima."),
+      sc("Está ventando hoje.", "It is windy today", ["am", "are"], "Com “it” usamos “is”: It is windy."),
+      reading(
+        "It is spring in Lisbon. The morning is cloudy, but the afternoon is sunny and warm. Marta wears a light jacket and walks to the park. She takes an umbrella because it may rain in the evening.",
+        "É primavera em Lisboa. A manhã está nublada, mas a tarde está ensolarada e quente. Marta veste uma jaqueta leve e caminha até o parque. Ela leva um guarda-chuva porque pode chover à noite.",
+        [
+          ["What is the afternoon weather like?", "Sunny and warm", ["Cold and rainy", "Windy and cloudy", "Hot and snowy"], "O texto diz: “the afternoon is sunny and warm.”"],
+          ["Why does Marta take an umbrella?", "It may rain later", ["It is raining now", "She is going swimming", "The park is closed"], "O texto diz que pode chover à noite."],
+        ],
+      ),
     ],
   }),
 ];
