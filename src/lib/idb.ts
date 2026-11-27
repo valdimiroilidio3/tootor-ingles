@@ -1,9 +1,10 @@
 /** Minimal promise-based IndexedDB wrapper. All learning data stays on this device. */
 
 const DB_NAME = "lumo-english";
-const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
-export const STORES = ["settings", "progress", "attempts", "vocab", "activity", "conversations"] as const;
+const CORE_STORES = ["settings", "progress", "attempts", "vocab", "activity", "conversations"] as const;
+export const STORES = [...CORE_STORES, "sessions"] as const;
 export type StoreName = (typeof STORES)[number];
 
 const KEY_PATH: Record<StoreName, string> = {
@@ -13,6 +14,7 @@ const KEY_PATH: Record<StoreName, string> = {
   vocab: "id",
   activity: "id",
   conversations: "id",
+  sessions: "lessonId",
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -26,13 +28,26 @@ function openDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
     dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (event) => {
         const db = req.result;
-        for (const s of STORES) {
-          if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: KEY_PATH[s] });
+        const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+        // Preserve the original v1 stores; create them only for a brand-new database.
+        if (oldVersion < 1) {
+          for (const store of CORE_STORES) db.createObjectStore(store, { keyPath: KEY_PATH[store] });
+        }
+        // v2 adds only the new checkpoint store. Existing learner records are never rebuilt.
+        if (oldVersion < 2 && !db.objectStoreNames.contains("sessions")) {
+          db.createObjectStore("sessions", { keyPath: KEY_PATH.sessions });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
       req.onerror = () => reject(req.error ?? new Error("Could not open the local database."));
       req.onblocked = () => reject(new Error("The local database is blocked by another tab."));
     }).catch((e) => {
@@ -114,13 +129,17 @@ export async function clearAll(stores: readonly StoreName[] = STORES): Promise<v
   });
 }
 
-/** Writes related records in one transaction so a lesson completion cannot be partially saved. */
-export async function writeBatch(records: Partial<Record<StoreName, unknown[]>>): Promise<void> {
-  const stores = STORES.filter((store) => records[store] !== undefined);
+/** Atomically writes lesson records and applies related deletes (such as its completed checkpoint). */
+export async function writeBatch(
+  records: Partial<Record<StoreName, unknown[]>>,
+  deletes: Partial<Record<StoreName, IDBValidKey[]>> = {},
+): Promise<void> {
+  const stores = STORES.filter((store) => records[store] !== undefined || deletes[store] !== undefined);
   await runTransaction(stores, (tx) => {
     for (const store of stores) {
       const objectStore = tx.objectStore(store);
       for (const record of records[store] ?? []) objectStore.put(record);
+      for (const key of deletes[store] ?? []) objectStore.delete(key);
     }
   });
 }

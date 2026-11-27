@@ -106,6 +106,36 @@ export interface Lesson {
 /** A learner response: text, ordered tokens, or matched pairs ("en::pt"). */
 export type Response = string | string[];
 
+export interface LessonSessionAnswer {
+  exerciseId: string;
+  category: Category;
+  type: ExerciseType;
+  correct: boolean;
+  answer: string;
+  expected: string;
+  prompt: string;
+}
+
+export interface MatchingDraft {
+  matchedPairs: string[];
+  selectedEnglish: string | null;
+  mistakes: number;
+}
+
+/** Versioned checkpoint for an unfinished or failed lesson; never treated as completion. */
+export interface LessonSession {
+  lessonId: string;
+  version: 1;
+  status: "in-progress" | "failed";
+  exerciseIndex: number;
+  results: LessonSessionAnswer[];
+  heartsLeft: number;
+  draft: Response | null;
+  matchingDraft?: MatchingDraft;
+  elapsedSeconds: number;
+  updatedAt: string;
+}
+
 /* ---------- Persistent data ---------- */
 
 export interface Settings {

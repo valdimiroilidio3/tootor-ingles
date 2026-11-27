@@ -6,19 +6,11 @@ import { createBackup } from "@/lib/backup";
 import * as idb from "@/lib/idb";
 import { scoreLesson } from "@/lib/scoring";
 import { createVocabItem, reviewItem, type Grade } from "@/lib/srs";
-import { EMPTY_DATA, type ActivityEntry, type AppData, type Attempt, type Backup, type Category, type Conversation, type ExerciseType, type LessonProgress, type Settings, type VocabEntry, type VocabItem } from "@/lib/types";
+import { EMPTY_DATA, type ActivityEntry, type AppData, type Attempt, type Backup, type Conversation, type LessonProgress, type LessonSession, type LessonSessionAnswer, type Settings, type VocabEntry, type VocabItem } from "@/lib/types";
 import { dateKey, uid } from "@/lib/util";
 import { lessonXp } from "@/lib/xp";
 
-export interface LessonResultInput {
-  exerciseId: string;
-  category: Category;
-  type: ExerciseType;
-  correct: boolean;
-  answer: string;
-  expected: string;
-  prompt: string;
-}
+export type LessonResultInput = LessonSessionAnswer;
 
 export interface FinishLessonInput {
   lessonId: string;
@@ -28,6 +20,7 @@ export interface FinishLessonInput {
   results: LessonResultInput[];
   seconds: number;
   vocab: VocabEntry[];
+  session?: LessonSession;
 }
 
 export interface FinishLessonResult {
@@ -37,15 +30,18 @@ export interface FinishLessonResult {
   stars: 1 | 2 | 3;
   newBadges: Badge[];
   wordsAdded: number;
+  persisted: boolean;
 }
 
 interface AppContextValue {
   status: "loading" | "ready";
   data: AppData;
+  lessonSessions: LessonSession[];
   storageError: string | null;
   dismissStorageError: () => void;
   saveSettings: (patch: Partial<Settings>) => Promise<void>;
   finishLesson: (input: FinishLessonInput) => Promise<FinishLessonResult>;
+  saveLessonSession: (session: LessonSession) => Promise<boolean>;
   addVocab: (entry: Partial<VocabEntry> & Pick<VocabEntry, "word" | "translation">, source?: VocabItem["source"]) => Promise<VocabItem | null>;
   removeVocab: (id: string) => Promise<void>;
   reviewVocab: (id: string, grade: Grade) => Promise<void>;
@@ -60,6 +56,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<AppData>(EMPTY_DATA);
+  const [lessonSessions, setLessonSessions] = useState<LessonSession[]>([]);
   const [status, setStatus] = useState<"loading" | "ready">("loading");
   const [storageError, setStorageError] = useState<string | null>(null);
   const ref = useRef<AppData>(EMPTY_DATA);
@@ -70,13 +67,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setData(next);
   }, []);
 
-  const safe = useCallback(async (fn: () => Promise<unknown>) => {
+  const safe = useCallback(async (fn: () => Promise<unknown>): Promise<boolean> => {
     try {
       await fn();
+      setStorageError(null);
+      return true;
     } catch (e) {
       setStorageError(
         `Your changes could not be saved to this browser's storage (${e instanceof Error ? e.message : "unknown error"}). They are kept in memory until you close the tab — export a backup from Settings if possible.`,
       );
+      return false;
     }
   }, []);
 
@@ -84,15 +84,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       let loaded: AppData = EMPTY_DATA;
+      let loadedSessions: LessonSession[] = [];
       try {
-        const [settings, progress, attempts, vocab, activity, conversations] = await Promise.all([
+        const [settings, progress, attempts, vocab, activity, conversations, sessions] = await Promise.all([
           idb.getAll<Settings>("settings"),
           idb.getAll<LessonProgress>("progress"),
           idb.getAll<Attempt>("attempts"),
           idb.getAll<VocabItem>("vocab"),
           idb.getAll<ActivityEntry>("activity"),
           idb.getAll<Conversation>("conversations"),
+          idb.getAll<LessonSession>("sessions"),
         ]);
+        loadedSessions = sessions;
         loaded = {
           settings: settings[0] ?? null,
           progress: Object.fromEntries(progress.map((p) => [p.lessonId, p])),
@@ -111,6 +114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       ref.current = loaded;
       setData(loaded);
+      setLessonSessions(loadedSessions);
       setStatus("ready");
     })();
     return () => {
@@ -197,6 +201,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [commit, safe],
   );
 
+  const saveLessonSession = useCallback(async (session: LessonSession) => {
+    const stored = await safe(() => idb.put("sessions", session));
+    if (stored) {
+      setLessonSessions((current) => [...current.filter((item) => item.lessonId !== session.lessonId), session]);
+    }
+    return stored;
+  }, [safe]);
+
   const finishLesson = useCallback<AppContextValue["finishLesson"]>(
     (input) => {
       const existingFinish = inFlightLessonFinishes.current.get(input.lessonId);
@@ -259,18 +271,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
           activity: [...before.activity, activity],
           vocab: [...before.vocab, ...newVocab],
         };
-        commit(next);
-        await safe(() =>
-          idb.writeBatch({
-            attempts,
-            activity: [activity],
-            progress: progressRecord ? [progressRecord] : [],
-            vocab: newVocab,
-          }),
+        const stored = await safe(() =>
+          idb.writeBatch(
+            {
+              attempts,
+              activity: [activity],
+              progress: progressRecord ? [progressRecord] : [],
+              vocab: newVocab,
+              ...(!input.passed && input.session ? { sessions: [input.session] } : {}),
+            },
+            input.passed ? { sessions: [input.lessonId] } : {},
+          ),
         );
+        if (stored) {
+          commit(next);
+          setLessonSessions((current) =>
+            input.passed
+              ? current.filter((session) => session.lessonId !== input.lessonId)
+              : input.session
+                ? [...current.filter((session) => session.lessonId !== input.lessonId), input.session]
+                : current,
+          );
+        }
 
-        const newBadges = evaluateBadges(next).filter((b) => b.unlocked && !badgesBefore.has(b.id));
-        return { xpAwarded: xp, firstCompletion: first, accuracy: score.accuracy, stars: score.stars, newBadges, wordsAdded: newVocab.length };
+        const newBadges = stored ? evaluateBadges(next).filter((b) => b.unlocked && !badgesBefore.has(b.id)) : [];
+        return { xpAwarded: stored ? xp : 0, firstCompletion: stored && first, accuracy: score.accuracy, stars: score.stars, newBadges, wordsAdded: stored ? newVocab.length : 0, persisted: stored };
       })();
       inFlightLessonFinishes.current.set(input.lessonId, operation);
       void operation.then(
@@ -291,6 +316,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const importBackup = useCallback(
     async (incoming: AppData) => {
       commit(incoming);
+      setLessonSessions([]);
       await safe(() =>
         idb.replaceAll({
           settings: incoming.settings ? [incoming.settings] : [],
@@ -307,17 +333,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const resetProgress = useCallback(async () => {
     commit({ ...EMPTY_DATA, settings: ref.current.settings });
-    await safe(() => idb.clearAll(["progress", "attempts", "vocab", "activity", "conversations"]));
+    setLessonSessions([]);
+    await safe(() => idb.clearAll(["progress", "attempts", "vocab", "activity", "conversations", "sessions"]));
   }, [commit, safe]);
 
   const value = useMemo<AppContextValue>(
     () => ({
       status,
       data,
+      lessonSessions,
       storageError,
       dismissStorageError: () => setStorageError(null),
       saveSettings,
       finishLesson,
+      saveLessonSession,
       addVocab,
       removeVocab,
       reviewVocab,
@@ -327,7 +356,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       importBackup,
       resetProgress,
     }),
-    [status, data, storageError, saveSettings, finishLesson, addVocab, removeVocab, reviewVocab, recordActivity, saveConversation, exportBackup, importBackup, resetProgress],
+    [status, data, lessonSessions, storageError, saveSettings, finishLesson, saveLessonSession, addVocab, removeVocab, reviewVocab, recordActivity, saveConversation, exportBackup, importBackup, resetProgress],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

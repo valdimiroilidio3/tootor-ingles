@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LESSONS, validateCurriculum, isUnlocked, nextLesson } from "@/content";
+import { LESSONS, validateCurriculum, isUnlocked, nextLesson, lessonIndex } from "@/content";
 import { DIAGNOSTIC } from "@/content/diagnostic";
 import { SCENARIOS } from "@/content/scenarios";
 import { createBackup, parseBackup } from "../backup";
@@ -12,10 +12,10 @@ describe("curriculum", () => {
   it("is structurally valid", () => {
     expect(validateCurriculum()).toEqual([]);
   });
-  it("has at least 10 beginner lessons plus A2 and B1", () => {
-    expect(LESSONS.filter((l) => l.cefr === "A1").length).toBeGreaterThanOrEqual(10);
-    expect(LESSONS.some((l) => l.cefr === "A2")).toBe(true);
-    expect(LESSONS.some((l) => l.cefr === "B1")).toBe(true);
+  it("has expanded A1, A2 and B1 lesson sections", () => {
+    expect(LESSONS.filter((l) => l.cefr === "A1").length).toBeGreaterThanOrEqual(12);
+    expect(LESSONS.filter((l) => l.cefr === "A2").length).toBeGreaterThanOrEqual(4);
+    expect(LESSONS.filter((l) => l.cefr === "B1").length).toBeGreaterThanOrEqual(4);
   });
   it("covers every exercise type", () => {
     const types = new Set(LESSONS.flatMap((l) => l.exercises.map((e) => e.type)));
@@ -33,8 +33,9 @@ describe("curriculum", () => {
   });
   it("unlocks everything up to the placement lesson", () => {
     const settings = { startingLessonId: "a1-routine" };
-    expect(isUnlocked(5, {}, settings)).toBe(true);
-    expect(isUnlocked(6, {}, settings)).toBe(false);
+    const startIndex = lessonIndex(settings.startingLessonId);
+    expect(isUnlocked(startIndex, {}, settings)).toBe(true);
+    expect(isUnlocked(startIndex + 1, {}, settings)).toBe(false);
   });
   it("daily challenge is deterministic for a date", () => {
     const s = { startingLessonId: "a1-greetings" };

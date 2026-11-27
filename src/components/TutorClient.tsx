@@ -67,7 +67,8 @@ export function TutorClient() {
   }, [mode]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const behavior: ScrollBehavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    endRef.current?.scrollIntoView({ behavior, block: "end" });
   }, [conv?.messages.length, busy]);
 
   const history = useMemo(
